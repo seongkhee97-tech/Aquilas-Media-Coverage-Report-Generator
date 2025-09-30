@@ -899,9 +899,9 @@ async def _build_with_template(template_path: str, payload: BuildReportReq, clie
 # -----------------------------
 # API
 # -----------------------------
-@app.get("/")
-def root():
-    return {"message": "OK"}
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok"}
 
 @app.get("/clients")
 def clients():
@@ -969,4 +969,5 @@ async def build_report(req: BuildReportReq):
         filename=filename,
         headers=headers,
     )
+
 
