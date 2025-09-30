@@ -3,7 +3,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Response
-from fastapi.responses import HTMLResponse
+import traceback, logging
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -27,6 +28,9 @@ from docx.oxml.table import CT_Tbl
 from docx.oxml.text.paragraph import CT_P
 from docx.table import Table
 from docx.text.paragraph import Paragraph
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("aquilas")
 
 app = FastAPI(title="Clipping Report Builder")
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -176,6 +180,20 @@ def _clone_para_format(src_p: Paragraph, dst_p: Paragraph):
     d.keep_together = s.keep_together
     d.keep_with_next = s.keep_with_next
     d.page_break_before = s.page_break_before
+
+async def _build_without_template(req: BuildReportReq, client_name: str) -> Document:
+    doc = Document()
+    style = doc.styles["Normal"]
+    style.font.name = "Calibri"
+    style._element.rPr.rFonts.set(qn("w:eastAsia"), "Calibri")
+    style.font.size = Pt(11)
+    for idx, it in enumerate(req.items, start=1):
+        _add_media_header_block(doc, client_name, it)
+        art = await _fetch_article_fields(it)
+        _add_article_body(doc, art["title"], art["text"], it.url, it.category or "")
+        if idx < len(req.items):
+            doc.add_page_break()
+    return doc
 
 # ---------- Chinese detection & font helpers ----------
 CJK_RE = re.compile(r'[\u4e00-\u9fff]')
@@ -939,46 +957,45 @@ def debug_template():
 
 @app.post("/build_report")
 async def build_report(req: BuildReportReq):
-    c = _resolve_client(req.client) or {"name": req.client}
-    client_name = c["name"]
+    try:
+        c = _resolve_client(req.client) or {"name": req.client}
+        client_name = c["name"]
 
-    template_path = os.path.join(os.path.dirname(__file__), "template.docx")
-    use_template = os.path.exists(template_path)
+        template_path = os.path.join(os.path.dirname(__file__), "template.docx")
+        use_template = os.path.exists(template_path)
 
-    if use_template:
-        doc = await _build_with_template(template_path, req, client_name)
-    else:
-        # Fallback per-item layout (no template)
-        doc = Document()
-        style = doc.styles["Normal"]
-        style.font.name = "Calibri"
-        style._element.rPr.rFonts.set(qn("w:eastAsia"), "Calibri")
-        style.font.size = Pt(11)
-        for idx, it in enumerate(req.items, start=1):
-            _add_media_header_block(doc, client_name, it)
-            art = await _fetch_article_fields(it)
-            _add_article_body(doc, art["title"], art["text"], it.url, it.category or "")
-            if idx < len(req.items):
-                doc.add_page_break()
+        if use_template:
+            try:
+                doc = await _build_with_template(template_path, req, client_name)
+            except Exception:
+                logger.exception("Template build failed; falling back to no-template layout.")
+                doc = await _build_without_template(req, client_name)
+                use_template = False
+        else:
+            doc = await _build_without_template(req, client_name)
 
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    safe_client = (client_name or "client").replace(" ", "_")
-    filename = f"media_clipping_{safe_client}_{stamp}.docx"
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_client = (client_name or "client").replace(" ", "_")
+        filename = f"media_clipping_{safe_client}_{stamp}.docx"
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
-        path = tmp.name
-    doc.save(path)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
+            path = tmp.name
+        doc.save(path)
 
-    headers = {"X-Template-Used": "1" if use_template else "0"}
-    if use_template:
-        headers["X-Template-Path"] = template_path
+        headers = {"X-Template-Used": "1" if use_template else "0"}
+        if use_template:
+            headers["X-Template-Path"] = template_path
 
-    return FileResponse(
-        path,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        filename=filename,
-        headers=headers,
-    )
+        return FileResponse(
+            path,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            filename=filename,
+            headers=headers,
+        )
 
-
-
+    except Exception as e:
+        logger.exception("build_report crashed")
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e), "trace": traceback.format_exc()},
+        )
