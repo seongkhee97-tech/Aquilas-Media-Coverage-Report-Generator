@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import Response
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -39,6 +40,15 @@ def home():
     if os.path.exists(UI_PATH):
         return HTMLResponse(open(UI_PATH, "r", encoding="utf-8").read())
     return HTMLResponse("<h1>Clipping Report Builder</h1><p>Backend is running.</p>")
+
+@app.head("/", include_in_schema=False)
+def home_head():
+    # Fast, empty response for health probes
+    return Response(status_code=204)
+
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok"}
 # --- CORS ---
 app.add_middleware(
     CORSMiddleware,
@@ -969,5 +979,6 @@ async def build_report(req: BuildReportReq):
         filename=filename,
         headers=headers,
     )
+
 
 
