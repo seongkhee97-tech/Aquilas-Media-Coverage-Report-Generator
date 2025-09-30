@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import os, json, tempfile, time, re, base64
@@ -27,7 +28,17 @@ from docx.table import Table
 from docx.text.paragraph import Paragraph
 
 app = FastAPI(title="Clipping Report Builder")
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+if os.path.isdir(STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+UI_PATH = os.path.join(os.path.dirname(__file__), "ui.html")
+
+@app.get("/", response_class=HTMLResponse)
+def home():
+    if os.path.exists(UI_PATH):
+        return HTMLResponse(open(UI_PATH, "r", encoding="utf-8").read())
+    return HTMLResponse("<h1>Clipping Report Builder</h1><p>Backend is running.</p>")
 # --- CORS ---
 app.add_middleware(
     CORSMiddleware,
@@ -958,3 +969,4 @@ async def build_report(req: BuildReportReq):
         filename=filename,
         headers=headers,
     )
+
