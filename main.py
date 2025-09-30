@@ -7,7 +7,7 @@ import traceback, logging
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-
+import io
 import os, json, tempfile, time, re, base64
 from typing import List, Dict, Any, Optional, Tuple
 from urllib.parse import urlparse, urljoin
@@ -50,9 +50,6 @@ def home_head():
     # Fast, empty response for health probes
     return Response(status_code=204)
 
-@app.get("/healthz")
-def healthz():
-    return {"status": "ok"}
 # --- CORS ---
 app.add_middleware(
     CORSMiddleware,
@@ -958,6 +955,9 @@ def debug_template():
 @app.post("/build_report")
 async def build_report(req: BuildReportReq):
     try:
+        if not req.items:
+            return JSONResponse(status_code=400, content={"error": "No items in request."})
+
         c = _resolve_client(req.client) or {"name": req.client}
         client_name = c["name"]
 
@@ -974,23 +974,36 @@ async def build_report(req: BuildReportReq):
         else:
             doc = await _build_without_template(req, client_name)
 
+        # --- Save to temp, then read bytes and return (avoid streaming issues) ---
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_client = (client_name or "client").replace(" ", "_")
         filename = f"media_clipping_{safe_client}_{stamp}.docx"
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
-            path = tmp.name
-        doc.save(path)
+            tmp_path = tmp.name
 
-        headers = {"X-Template-Used": "1" if use_template else "0"}
+        doc.save(tmp_path)
+
+        with open(tmp_path, "rb") as f:
+            data = f.read()
+
+        # Optionally remove the temp file (not required on Render’s ephemeral FS)
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+
+        extra_headers = {
+            "X-Template-Used": "1" if use_template else "0",
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        }
         if use_template:
-            headers["X-Template-Path"] = template_path
+            extra_headers["X-Template-Path"] = template_path
 
-        return FileResponse(
-            path,
+        return Response(
+            content=data,
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            filename=filename,
-            headers=headers,
+            headers=extra_headers,
         )
 
     except Exception as e:
