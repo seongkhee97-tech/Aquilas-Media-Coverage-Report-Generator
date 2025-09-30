@@ -1,0 +1,496 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Media Clipping Report</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { --bg:#0b1220; --card:#0f172a; --muted:#9aa4b2; --fg:#e6e9ee; --accent:#22c55e; --line:#1c2740; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto; background:var(--bg); color:var(--fg); }
+    .wrap { max-width: 980px; margin: 28px auto; padding: 0 16px; }
+    header { display:flex; align-items:center; gap:12px; margin-bottom:16px; }
+    h1 { font-size: 24px; margin:0; }
+    .api { margin-left:auto; display:flex; align-items:center; gap:8px; }
+    label { font-size:12px; color:var(--muted); display:block; margin-bottom:6px; }
+    input, select { background:#0b1326; color:var(--fg); border:1px solid var(--line); border-radius:10px; padding:10px 12px; font-size:14px; width:100%; }
+    input[type="date"] { padding:9px 10px; }
+    .card { background:var(--card); border-radius:16px; padding:16px; box-shadow: 0 18px 40px rgba(0,0,0,.35); margin-bottom:16px; border:1px solid var(--line); }
+    .row { display:flex; gap:12px; align-items:flex-start; flex-wrap:wrap; }
+    .grow { flex:1 1 220px; min-width:220px; }
+    button { border:0; border-radius:12px; padding:10px 14px; color:#031316; background:var(--accent); cursor:pointer; font-weight:600; }
+    button.ghost { background:transparent; color:var(--fg); border:1px solid var(--line); }
+    button.danger { background:#ef4444; color:white; }
+    table { width:100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid var(--line); padding:10px; font-size:14px; vertical-align:top; }
+    th { color:var(--muted); font-weight:600; text-align:left; }
+    td a { color:inherit; }
+    .muted { color:var(--muted); }
+    .right { text-align:right; }
+    td.url { overflow-wrap:anywhere; word-break:break-word; }
+
+    /* Actions cell layout:
+       Row1: [📷] [Paste Img] [↑] [↓]
+       Row2: [Remove] (full width)
+    */
+    td.actions {
+      display: grid;
+      grid-template-columns: auto auto auto auto;
+      grid-auto-rows: auto;
+      gap: 6px;
+      justify-content: end;   /* keep whole block right-aligned */
+      align-items: center;
+      white-space: nowrap;
+    }
+    .imgFlag { grid-row: 1; grid-column: 1; font-size:16px; }
+    .paste   { grid-row: 1; grid-column: 2; }
+    .up      { grid-row: 1; grid-column: 3; padding:6px 10px; }
+    .down    { grid-row: 1; grid-column: 4; padding:6px 10px; }
+    .remove  { grid-row: 2; grid-column: 1 / span 4; justify-self: end; }
+
+    /* Compact the up/down buttons */
+    .up, .down { padding:6px 10px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Aquilas Media Coverage Report Generator</h1>
+      <div class="api">
+        <label>API</label>
+        <input id="api" value="http://127.0.0.1:8000" style="min-width:260px" />
+        <button class="ghost" onclick="saveAPI()">Save</button>
+      </div>
+    </header>
+
+    <!-- FORM -->
+    <div class="card">
+      <div class="row">
+        <div class="grow">
+          <label>Client</label>
+          <select id="client"></select>
+        </div>
+
+        <div class="grow">
+          <label>Media</label>
+          <select id="media"></select>
+          <input id="mediaOther" placeholder="Enter media name" style="display:none; margin-top:6px" />
+        </div>
+
+        <div class="grow">
+          <label>Category</label>
+          <select id="category">
+            <option value="Online news">Online news</option>
+            <option value="NewsPaper">NewsPaper</option>
+          </select>
+        </div>
+
+        <div class="grow">
+          <label>Section</label>
+          <select id="section">
+            <option value="Business">Business</option>
+            <option value="Corporate">Corporate</option>
+            <option value="__OTHER__">Other…</option>
+          </select>
+          <input id="sectionOther" placeholder="Enter section" style="display:none; margin-top:6px" />
+        </div>
+
+        <div class="grow">
+          <label>Language</label>
+          <select id="lang">
+            <option>English</option>
+            <option>Chinese</option>
+            <option>Malay</option>
+          </select>
+        </div>
+
+        <div class="grow">
+          <label>Date</label>
+          <select id="date"></select>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:12px">
+        <div class="grow">
+          <label id="urlLabel">News URL (For newspaper, URL is optional.)</label>
+          <input id="url" placeholder="https://example.com/news/..." style="width:700px" />
+          <div class="hint">You can paste multiple URLs separated by spaces or new lines.</div>
+        </div>
+
+        <div style="margin-top:22px">
+          <button onclick="addItem()">Add clipping(s)</button>
+        </div>
+      </div>
+    </div><!-- /FORM card -->
+
+    <!-- LIST -->
+    <div class="card">
+      <div class="row" style="justify-content:space-between; align-items:center">
+        <h3 style="margin:0">Clippings <span class="count" id="count"></span></h3>
+        <div class="row" style="gap:8px; align-items:center">
+          <input id="importFile" type="file" accept="application/json" style="display:none" />
+          <button class="ghost" onclick="exportList()">Export JSON</button>
+          <button class="ghost" onclick="document.getElementById('importFile').click()">Import JSON</button>
+          <button class="ghost" onclick="saveList()">Save list</button>
+          <button class="danger" onclick="clearList()">Clear</button>
+        </div>
+      </div>
+
+      <table id="list">
+        <colgroup>
+          <col style="width:40px">   <!-- # -->
+          <col style="width:160px">  <!-- Media -->
+          <col style="width:120px">  <!-- Category -->
+          <col style="width:90px">   <!-- Section -->
+          <col style="width:80px">   <!-- Lang -->
+          <col style="width:170px">  <!-- Date (extended) -->
+          <col style="width:420px">  <!-- URL (extended) -->
+          <col>                      <!-- Actions -->
+        </colgroup>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Media</th>
+            <th>Category</th>
+            <th>Section</th>
+            <th>Language</th>
+            <th>Date</th>
+            <th>URL</th>
+            <th class="right">Actions</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+
+      <div class="row" style="margin-top:14px; justify-content:space-between">
+        <div class="muted">Use ↑ ↓ to reorder.</div>
+        <div>
+          <button id="genBtn" onclick="generate()">Generate DOCX</button>
+        </div>
+      </div>
+    </div>
+
+    <p class="muted">Tip: Click “Paste Img” in a row after copying an image to your clipboard (Ctrl+C). Your photo will be inserted where the {{ITEM_IMAGE}} placeholder is.</p>
+  </div>
+
+  <script>
+    const MEDIA_MAP = [
+      ["bernama.com","Bernama"],
+      ["thestar.com.my","The Star"],
+      ["theedgemalaysia.com","The Edge"],
+      ["thesundaily.my","The Sun"],
+      ["themalaysianreserve.com","The Malaysian Reserve"],
+      ["nst.com.my","New Straits Times"],
+      ["sinchew.com.my","Sin Chew Daily"],
+      ["chinapress.com.my","China Press"],
+      ["enanyang.my","Nanyang Siang Pau"],
+      ["utusan.com.my","Utusan Malaysia"],
+      ["bharian.com.my","Berita Harian"],
+      ["dagangnews.com","DagangNews"],
+    ];
+    function guessMediaFromURL(u){
+      try{
+        const h = new URL(u).hostname;
+        const hit = MEDIA_MAP.find(([d]) => h.endsWith(d));
+        return hit ? hit[1] : h;
+      }catch{ return ""; }
+    }
+
+    const S = {
+      api: localStorage.getItem('api') || document.getElementById('api').value,
+      items: JSON.parse(localStorage.getItem('items') || '[]'),
+      clientId: localStorage.getItem('clientId') || null,
+    };
+    document.getElementById('api').value = S.api;
+
+    function saveAPI(){
+      S.api = document.getElementById('api').value.trim();
+      localStorage.setItem('api', S.api);
+      loadOptions();
+    }
+
+    function persist(){
+      localStorage.setItem('items', JSON.stringify(S.items));
+      const clientSel = document.getElementById('client');
+      localStorage.setItem('clientId', clientSel.value || '');
+    }
+
+    function validURL(s){
+      try { new URL(s); return true; } catch { return false; }
+    }
+
+    function toggleOtherInput(selectEl, otherInputEl) {
+      if (selectEl.value === '__OTHER__') {
+        otherInputEl.style.display = '';
+        otherInputEl.focus();
+      } else {
+        otherInputEl.style.display = 'none';
+        otherInputEl.value = '';
+      }
+    }
+
+    function fillDateOptions() {
+      const dateSel = document.getElementById('date');
+      dateSel.innerHTML = '';
+      const today = new Date();
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(today);
+        d.setDate(today.getDate() - i);
+        const iso = d.toISOString().slice(0,10);
+        const label = d.toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' });
+        const opt = document.createElement('option');
+        opt.value = iso;
+        opt.textContent = label;
+        if (i === 0) opt.selected = true;
+        dateSel.appendChild(opt);
+      }
+    }
+
+    async function loadOptions(){
+      const clientSel = document.getElementById('client');
+      clientSel.innerHTML = '';
+      const clients = await fetch(S.api + '/clients').then(r=>r.json());
+      for (const c of clients){
+        const opt = document.createElement('option');
+        opt.value = c.id;
+        opt.textContent = c.name;
+        clientSel.appendChild(opt);
+      }
+      if (S.clientId) clientSel.value = S.clientId;
+
+      const mediaSel = document.getElementById('media');
+      mediaSel.innerHTML = '';
+      const medias = await fetch(S.api + '/media').then(r=>r.json());
+      for (const m of medias){
+        const opt = document.createElement('option');
+        opt.value = m;
+        opt.textContent = m;
+        mediaSel.appendChild(opt);
+      }
+      const mediaOtherOpt = document.createElement('option');
+      mediaOtherOpt.value = '__OTHER__';
+      mediaOtherOpt.textContent = 'Other…';
+      mediaSel.appendChild(mediaOtherOpt);
+
+      fillDateOptions();
+
+      const mediaOther = document.getElementById('mediaOther');
+      mediaSel.addEventListener('change', () => toggleOtherInput(mediaSel, mediaOther));
+
+      const sectionSel = document.getElementById('section');
+      const sectionOther = document.getElementById('sectionOther');
+      sectionSel.addEventListener('change', () => toggleOtherInput(sectionSel, sectionOther));
+
+      renderList();
+      updateCategoryUI();
+    }
+
+    function addItem(){
+      const mediaSelEl = document.getElementById('media');
+      const mediaOther = document.getElementById('mediaOther');
+      const sectionSelEl = document.getElementById('section');
+      const sectionOther = document.getElementById('sectionOther');
+
+      const chosenMedia = (mediaSelEl.value === '__OTHER__')
+        ? mediaOther.value.trim()
+        : mediaSelEl.value;
+
+      const chosenSection = (sectionSelEl.value === '__OTHER__')
+        ? sectionOther.value.trim()
+        : (sectionSelEl.value || '').trim();
+
+      const language = document.getElementById('lang').value;
+
+      const categoryUI = document.getElementById('category').value;
+      const category = categoryUI;
+
+      const date = document.getElementById('date').value;
+      const raw = document.getElementById('url').value.trim();
+
+      const urls = raw ? raw.split(/\s+/).filter(Boolean) : [];
+
+      if (category.toLowerCase().includes('online') && urls.length === 0){
+        alert('Please enter at least one URL for Online news.');
+        return;
+      }
+
+      if ((mediaSelEl.value === '__OTHER__') && !chosenMedia){
+        alert('Please enter a media name.');
+        return;
+      }
+      if ((sectionSelEl.value === '__OTHER__') && !chosenSection){
+        alert('Please enter a section name.');
+        return;
+      }
+
+      if (category.toLowerCase().includes('paper') && urls.length === 0){
+        const media = chosenMedia || "";
+        S.items.push({ media, category, section: chosenSection, language, date, url: null, image_data: null });
+      } else {
+        let added = 0, skippedDup = 0, skippedBad = 0;
+        urls.forEach((u) => {
+          if (!validURL(u)){ skippedBad++; return; }
+          if (S.items.some(x => x.url === u)){ skippedDup++; return; }
+          const media = chosenMedia || guessMediaFromURL(u) || "";
+          S.items.push({ media, category, section: chosenSection, language, date, url: u, image_data: null });
+          added++;
+        });
+        let msg = `Added ${added}`;
+        if (skippedDup) msg += `, skipped ${skippedDup} duplicate(s)`;
+        if (skippedBad) msg += `, skipped ${skippedBad} invalid URL(s)`;
+        alert(msg);
+      }
+
+      renderList();
+      persist();
+      document.getElementById('url').value = '';
+    }
+
+    function removeItem(i){ S.items.splice(i,1); renderList(); persist(); }
+    function moveUp(i){ if (i<=0) return; [S.items[i-1], S.items[i]] = [S.items[i], S.items[i-1]]; renderList(); persist(); }
+    function moveDown(i){ if (i>=S.items.length-1) return; [S.items[i+1], S.items[i]] = [S.items[i], S.items[i+1]]; renderList(); persist(); }
+    function clearList(){ if (!confirm('Clear all clippings?')) return; S.items = []; renderList(); persist(); }
+    function saveList(){ persist(); alert('Saved locally.'); }
+
+    async function pasteImage(i){
+      try{
+        if (!navigator.clipboard || !navigator.clipboard.read){
+          alert('Clipboard image read not supported by this browser.');
+          return;
+        }
+        const items = await navigator.clipboard.read();
+        for (const it of items){
+          for (const type of it.types){
+            if (type.startsWith('image/')){
+              const blob = await it.getType(type);
+              const reader = new FileReader();
+              reader.onload = () => {
+                S.items[i].image_data = reader.result; // data URL
+                renderList(); persist();
+                alert('Image attached to this clipping.');
+              };
+              reader.readAsDataURL(blob);
+              return;
+            }
+          }
+        }
+        alert('No image found in clipboard.');
+      }catch(err){
+        alert('Paste failed: ' + err.message);
+      }
+    }
+
+    function exportList(){
+      const data = JSON.stringify({ client: document.getElementById('client').value, items: S.items }, null, 2);
+      const blob = new Blob([data], {type:'application/json'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'clippings.json'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    }
+    document.getElementById('importFile').addEventListener('change', async (e) => {
+      const f = e.target.files[0];
+      if (!f) return;
+      try {
+        const text = await f.text();
+        const obj = JSON.parse(text);
+        if (Array.isArray(obj.items)){
+          S.items = obj.items.filter(x => x && (x.url !== undefined));
+          renderList(); persist();
+          if (obj.client) { document.getElementById('client').value = obj.client; persist(); }
+          alert('Imported.');
+        } else {
+          alert('Invalid JSON: no "items" array.');
+        }
+      } catch(err){
+        alert('Import failed: ' + err.message);
+      } finally {
+        e.target.value = '';
+      }
+    });
+
+    function renderList(){
+      const tbody = document.querySelector('#list tbody');
+      const countEl = document.getElementById('count');
+      tbody.innerHTML = '';
+      S.items.forEach((it, i) => {
+        const tr = document.createElement('tr');
+        const hasImg = it.image_data ? '📷' : '';
+        tr.innerHTML = `
+          <td>${i+1}</td>
+          <td>${it.media||''}</td>
+          <td>${it.category||''}</td>
+          <td>${it.section||''}</td>
+          <td>${it.language||''}</td>
+          <td>${it.date||''}</td>
+          <td class="url">${it.url ? `<a href="${it.url}" target="_blank" rel="noopener">${it.url}</a>` : '<span class="muted">—</span>'}</td>
+          <td class="actions">
+            <span class="imgFlag" title="${hasImg ? 'Image attached' : 'No image'}">${hasImg}</span>
+            <button class="ghost paste" onclick="pasteImage(${i})">Paste Img</button>
+            <button class="ghost up" onclick="moveUp(${i})">↑</button>
+            <button class="ghost down" onclick="moveDown(${i})">↓</button>
+            <button class="danger remove" onclick="removeItem(${i})">Remove</button>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+      countEl.textContent = `(${S.items.length})`;
+    }
+
+    function updateCategoryUI(){
+      const catLabel = document.getElementById('category').value;
+      const urlLabel = document.getElementById('urlLabel');
+      if (catLabel.toLowerCase().includes('paper')){
+        urlLabel.textContent = 'News URL (For newspaper, URL is optional.)';
+      } else {
+        urlLabel.textContent = 'News URL';
+      }
+    }
+    document.getElementById('category').addEventListener('change', updateCategoryUI);
+
+    async function generate(){
+      if (!S.items.length){ alert('Add at least one clipping'); return; }
+      const client = document.getElementById('client').value;
+      const payload = { client, items: S.items };
+
+      const btn = document.getElementById('genBtn');
+      btn.disabled = true;
+      const oldLabel = btn.textContent;
+      btn.textContent = 'Building...';
+
+      try{
+        const res = await fetch(S.api + '/build_report', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        if (!res.ok){
+          const msg = await res.text();
+          alert('Error: ' + msg);
+          return;
+        }
+
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'media_clipping_report.docx';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = oldLabel;
+      }
+    }
+
+    document.getElementById('url').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter'){ e.preventDefault(); addItem(); }
+    });
+
+    loadOptions();
+    document.getElementById('client').addEventListener('change', persist);
+  </script>
+</body>
+</html>
