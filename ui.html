@@ -29,16 +29,12 @@
     .right { text-align:right; }
     td.url { overflow-wrap:anywhere; word-break:break-word; }
 
-    /* Actions cell layout:
-       Row1: [📷] [Paste Img] [↑] [↓]
-       Row2: [Remove] (full width)
-    */
     td.actions {
       display: grid;
       grid-template-columns: auto auto auto auto;
       grid-auto-rows: auto;
       gap: 6px;
-      justify-content: end;   /* keep whole block right-aligned */
+      justify-content: end;
       align-items: center;
       white-space: nowrap;
     }
@@ -47,9 +43,6 @@
     .up      { grid-row: 1; grid-column: 3; padding:6px 10px; }
     .down    { grid-row: 1; grid-column: 4; padding:6px 10px; }
     .remove  { grid-row: 2; grid-column: 1 / span 4; justify-self: end; }
-
-    /* Compact the up/down buttons */
-    .up, .down { padding:6px 10px; }
   </style>
 </head>
 <body>
@@ -58,7 +51,8 @@
       <h1>Aquilas Media Coverage Report Generator</h1>
       <div class="api">
         <label>API</label>
-        <input id="api" value="http://127.0.0.1:8000" style="min-width:260px" />
+        <!-- leave empty; JS will fill with window.location.origin or saved value -->
+        <input id="api" placeholder="Same site (auto)" style="min-width:260px" />
         <button class="ghost" onclick="saveAPI()">Save</button>
       </div>
     </header>
@@ -138,14 +132,14 @@
 
       <table id="list">
         <colgroup>
-          <col style="width:40px">   <!-- # -->
-          <col style="width:160px">  <!-- Media -->
-          <col style="width:120px">  <!-- Category -->
-          <col style="width:90px">   <!-- Section -->
-          <col style="width:80px">   <!-- Lang -->
-          <col style="width:170px">  <!-- Date (extended) -->
-          <col style="width:420px">  <!-- URL (extended) -->
-          <col>                      <!-- Actions -->
+          <col style="width:40px">
+          <col style="width:160px">
+          <col style="width:120px">
+          <col style="width:90px">
+          <col style="width:80px">
+          <col style="width:170px">
+          <col style="width:420px">
+          <col>
         </colgroup>
         <thead>
           <tr>
@@ -174,6 +168,23 @@
   </div>
 
   <script>
+    // ---------- API base URL handling ----------
+    const DEFAULT_API = window.location.origin;  // same-site API by default
+    const S = {
+      api: localStorage.getItem('api') || DEFAULT_API,
+      items: JSON.parse(localStorage.getItem('items') || '[]'),
+      clientId: localStorage.getItem('clientId') || null,
+    };
+    document.getElementById('api').value = S.api;
+    function saveAPI(){
+      let v = document.getElementById('api').value.trim();
+      if (!v) v = DEFAULT_API; // blank => same origin
+      S.api = v;
+      localStorage.setItem('api', v);
+      loadOptions();
+    }
+
+    // ---------- Helpers ----------
     const MEDIA_MAP = [
       ["bernama.com","Bernama"],
       ["thestar.com.my","The Star"],
@@ -195,30 +206,14 @@
         return hit ? hit[1] : h;
       }catch{ return ""; }
     }
-
-    const S = {
-      api: localStorage.getItem('api') || document.getElementById('api').value,
-      items: JSON.parse(localStorage.getItem('items') || '[]'),
-      clientId: localStorage.getItem('clientId') || null,
-    };
-    document.getElementById('api').value = S.api;
-
-    function saveAPI(){
-      S.api = document.getElementById('api').value.trim();
-      localStorage.setItem('api', S.api);
-      loadOptions();
-    }
-
     function persist(){
       localStorage.setItem('items', JSON.stringify(S.items));
       const clientSel = document.getElementById('client');
       localStorage.setItem('clientId', clientSel.value || '');
     }
-
     function validURL(s){
       try { new URL(s); return true; } catch { return false; }
     }
-
     function toggleOtherInput(selectEl, otherInputEl) {
       if (selectEl.value === '__OTHER__') {
         otherInputEl.style.display = '';
@@ -229,6 +224,7 @@
       }
     }
 
+    // ---------- Date options ----------
     function fillDateOptions() {
       const dateSel = document.getElementById('date');
       dateSel.innerHTML = '';
@@ -246,37 +242,49 @@
       }
     }
 
+    // ---------- Load dropdowns ----------
     async function loadOptions(){
+      fillDateOptions(); // fill dates regardless
+
       const clientSel = document.getElementById('client');
+      const mediaSel  = document.getElementById('media');
       clientSel.innerHTML = '';
-      const clients = await fetch(S.api + '/clients').then(r=>r.json());
-      for (const c of clients){
-        const opt = document.createElement('option');
-        opt.value = c.id;
-        opt.textContent = c.name;
-        clientSel.appendChild(opt);
-      }
-      if (S.clientId) clientSel.value = S.clientId;
+      mediaSel.innerHTML  = '';
 
-      const mediaSel = document.getElementById('media');
-      mediaSel.innerHTML = '';
-      const medias = await fetch(S.api + '/media').then(r=>r.json());
-      for (const m of medias){
-        const opt = document.createElement('option');
-        opt.value = m;
-        opt.textContent = m;
-        mediaSel.appendChild(opt);
-      }
-      const mediaOtherOpt = document.createElement('option');
-      mediaOtherOpt.value = '__OTHER__';
-      mediaOtherOpt.textContent = 'Other…';
-      mediaSel.appendChild(mediaOtherOpt);
+      try {
+        const [clients, medias] = await Promise.all([
+          fetch(S.api + '/clients').then(r => { if(!r.ok) throw new Error('/clients failed'); return r.json(); }),
+          fetch(S.api + '/media').then(r => { if(!r.ok) throw new Error('/media failed'); return r.json(); }),
+        ]);
 
-      fillDateOptions();
+        // Clients
+        for (const c of clients){
+          const opt = document.createElement('option');
+          opt.value = c.id;         // backend accepts id or full name
+          opt.textContent = c.name;
+          clientSel.appendChild(opt);
+        }
+        if (S.clientId) clientSel.value = S.clientId;
+
+        // Media
+        for (const m of medias){
+          const opt = document.createElement('option');
+          opt.value = m;
+          opt.textContent = m;
+          mediaSel.appendChild(opt);
+        }
+        const mediaOtherOpt = document.createElement('option');
+        mediaOtherOpt.value = '__OTHER__';
+        mediaOtherOpt.textContent = 'Other…';
+        mediaSel.appendChild(mediaOtherOpt);
+
+      } catch (err) {
+        console.error(err);
+        alert('Unable to load /clients or /media from ' + S.api + '.\nTip: leave the API box empty or set it to ' + DEFAULT_API);
+      }
 
       const mediaOther = document.getElementById('mediaOther');
       mediaSel.addEventListener('change', () => toggleOtherInput(mediaSel, mediaOther));
-
       const sectionSel = document.getElementById('section');
       const sectionOther = document.getElementById('sectionOther');
       sectionSel.addEventListener('change', () => toggleOtherInput(sectionSel, sectionOther));
@@ -285,6 +293,7 @@
       updateCategoryUI();
     }
 
+    // ---------- List ops ----------
     function addItem(){
       const mediaSelEl = document.getElementById('media');
       const mediaOther = document.getElementById('mediaOther');
@@ -300,20 +309,15 @@
         : (sectionSelEl.value || '').trim();
 
       const language = document.getElementById('lang').value;
-
-      const categoryUI = document.getElementById('category').value;
-      const category = categoryUI;
-
+      const category = document.getElementById('category').value;
       const date = document.getElementById('date').value;
       const raw = document.getElementById('url').value.trim();
-
       const urls = raw ? raw.split(/\s+/).filter(Boolean) : [];
 
       if (category.toLowerCase().includes('online') && urls.length === 0){
         alert('Please enter at least one URL for Online news.');
         return;
       }
-
       if ((mediaSelEl.value === '__OTHER__') && !chosenMedia){
         alert('Please enter a media name.');
         return;
@@ -489,6 +493,7 @@
       if (e.key === 'Enter'){ e.preventDefault(); addItem(); }
     });
 
+    // boot
     loadOptions();
     document.getElementById('client').addEventListener('change', persist);
   </script>
