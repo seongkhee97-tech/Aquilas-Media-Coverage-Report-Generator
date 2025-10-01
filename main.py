@@ -502,7 +502,10 @@ async def _fetch_article_fields(item: BuildItem) -> Dict[str, Any]:
     if item.image_data:
         pasted_image_path = _data_url_to_temp(item.image_data)
 
-    if item.url:
+    is_newspaper = not _is_online(item.category or "")
+
+    if item.url and not is_newspaper:
+        # Online: we may fetch and extract
         try:
             html = await _fetch_html(item.url)
             if not title or not text:
@@ -513,6 +516,9 @@ async def _fetch_article_fields(item: BuildItem) -> Dict[str, Any]:
                 image_url = _extract_image_url(html, item.url)
         except Exception:
             pass
+    else:
+        # Newspaper: do NOT fetch headline/content/URL; keep whatever caller provided.
+        pass
 
     if not text or not text.strip():
         text = "(Content not extracted. See source note below.)"
@@ -520,7 +526,7 @@ async def _fetch_article_fields(item: BuildItem) -> Dict[str, Any]:
             title = "[Headline]"
     else:
         if not title or title.strip() == "":
-            if item.url:
+            if item.url and not is_newspaper:
                 title = urlparse(item.url).path.rsplit("/", 1)[-1].replace("-", " ").title() or "[Headline]"
             else:
                 title = "[Headline]"
@@ -528,7 +534,7 @@ async def _fetch_article_fields(item: BuildItem) -> Dict[str, Any]:
     url_label = ""
     if item.media and item.media.strip():
         url_label = item.media.strip()
-    elif item.url:
+    elif item.url and not is_newspaper:
         host = urlparse(item.url).hostname or ""
         url_label = host.replace("www.", "") if host else "link"
 
@@ -539,6 +545,7 @@ async def _fetch_article_fields(item: BuildItem) -> Dict[str, Any]:
         "pasted_image_path": pasted_image_path,
         "url_label": url_label,
     }
+
 
 # ---------- Card prototype detection & cloning ----------
 ITEM_TOKENS = {
@@ -656,12 +663,19 @@ def _replace_in_paragraph_single(p: Paragraph, mapping: Dict[str, Any],
         p.add_run(current_text if current_text else "")
 
     # ---------- 3) URL token -> hyperlink line ----------
-    if had_url_token and url_for_link:
+    if had_url_token:
+        # Clear all current runs first
         for r in list(p.runs)[::-1]:
             r._element.getparent().remove(r._element)
-        label = url_label or (urlparse(url_for_link).hostname or "link").replace("www.", "")
-        p.add_run(f"Source from {label}: ")
-        _add_hyperlink(p, url_for_link, url_for_link)
+
+        if url_for_link:
+            # REQUIRED: no media label — just "Source from: {url}"
+            p.add_run("Source from: ")
+            _add_hyperlink(p, url_for_link, url_for_link)
+        else:
+            # No URL provided: remove the token entirely
+            # (prevents stray "{{ITEM_URL}}" appearing in output)
+            pass
 
     # ---------- 4) Headline styling ----------
     if had_headline:
@@ -730,13 +744,18 @@ def _replace_placeholders_in_inserted_elements(
                                 _rebuild_runs_cjk_aware(p, is_headline=had_headline)
 
 # ---------- Build using template (per-media pages, no clippings table) ----------
-async def _build_with_template(template_path: str, payload: BuildReportReq, client_name: str) -> Document:
-    items: List[BuildItem] = payload.items or []
+    # Group by media + category(normalized to online/newspaper) + language, preserving order
+    def _cat_key(cat: str) -> str:
+        return "online" if _is_online(cat) else "newspaper"
 
-    # Group by media preserving order
-    media_groups: "OrderedDict[str, List[BuildItem]]" = OrderedDict()
+    media_groups: "OrderedDict[tuple[str, str, str], List[BuildItem]]" = OrderedDict()
     for it in items:
-        media_groups.setdefault(it.media or "", []).append(it)
+        key = (
+            (it.media or "").strip(),
+            _cat_key(it.category or ""),
+            (it.language or "").strip().lower(),
+        )
+        media_groups.setdefault(key, []).append(it)
 
     total = len(items)
     online = sum(1 for x in items if _is_online(x.category))
@@ -753,7 +772,7 @@ async def _build_with_template(template_path: str, payload: BuildReportReq, clie
     marker_para.text = ""
 
     # FIRST MEDIA
-    first_media, first_items = next(iter(media_groups.items())) if media_groups else ("", [])
+    (first_media, first_cat_key, first_lang), first_items = next(iter(media_groups.items())) if media_groups else (("", "", ""), [])
     dates_first = sorted([x.date for x in first_items if x.date])
     date_single_first = _fmt_date(dates_first[0]) if dates_first else ""
 
@@ -765,9 +784,9 @@ async def _build_with_template(template_path: str, payload: BuildReportReq, clie
         "ONLINE_COUNT": online,
         "NEWSPAPER_COUNT": paper,
         "SUMMARY_TEXT": f"Total clippings: {total}. Online: {online}. Newspaper: {paper}.",
-        "LANG_SUMMARY": _rollup_summary(first_items, "language"),
+        "LANG_SUMMARY": _rollup_summary(first_items, "language"),  # stays single now
         "MEDIA_SUMMARY": first_media or "",
-        "CATEGORY_SUMMARY": _rollup_summary(first_items, "category"),
+        "CATEGORY_SUMMARY": "Online news" if first_cat_key == "online" else "Newspaper",
         "SECTION_SUMMARY": _rollup_summary(first_items, "section"),
     }
     _replace_inline_placeholders(doc, mapping_first)
@@ -782,10 +801,11 @@ async def _build_with_template(template_path: str, payload: BuildReportReq, clie
     if card_proto_xml:
         for it in first_items:
             art = await _fetch_article_fields(it)
+            is_newspaper = not _is_online(it.category or "")
             mapping_item = {
-                "ITEM_HEADLINE": art["title"],
-                "ITEM_CONTENT": art["text"],
-                "ITEM_URL": it.url or "",
+                "ITEM_HEADLINE": art["title"] if not is_newspaper else "",
+                "ITEM_CONTENT": art["text"]   if not is_newspaper else "",
+                "ITEM_URL":     (it.url or "") if (it.url and not is_newspaper) else "",
                 "ITEM_URL_LABEL": art["url_label"],
                 "ITEM_MEDIA": it.media or "",
                 "ITEM_SECTION": it.section or "",
@@ -793,6 +813,7 @@ async def _build_with_template(template_path: str, payload: BuildReportReq, clie
                 "ITEM_DATE": _fmt_date(it.date),
                 "ITEM_IMAGE": "",  # handled separately
             }
+
             image_path = None
             if art["pasted_image_path"]:
                 image_path = art["pasted_image_path"]
@@ -803,9 +824,12 @@ async def _build_with_template(template_path: str, payload: BuildReportReq, clie
 
             inserted = _insert_blocks_after(insertion_ref, card_proto_xml)
             _replace_placeholders_in_inserted_elements(
-                doc, inserted, mapping_item, image_path, it.url, art["url_label"],
+                doc, inserted, mapping_item, image_path,
+                (it.url if (it.url and not is_newspaper) else None),
+                art["url_label"],
                 use_chinese_font=use_chinese_font
             )
+
             insertion_ref = Paragraph(inserted[-1], doc) if inserted else insertion_ref
     else:
         for i, it in enumerate(first_items, start=1):
@@ -858,9 +882,10 @@ async def _build_with_template(template_path: str, payload: BuildReportReq, clie
             "SUMMARY_TEXT": f"Total clippings: {total}. Online: {online}. Newspaper: {paper}.",
             "LANG_SUMMARY": _rollup_summary(group_items, "language"),
             "MEDIA_SUMMARY": media_name or "",
-            "CATEGORY_SUMMARY": _rollup_summary(group_items, "category"),
+            "CATEGORY_SUMMARY": "Online news" if cat_key == "online" else "Newspaper",
             "SECTION_SUMMARY": _rollup_summary(group_items, "section"),
         }
+
         _replace_inline_placeholders(doc, mapping_group)
 
         last_table_marker = _find_last_paragraph_with_text(doc, "{{CLIPPINGS_TABLE}}")
@@ -898,9 +923,12 @@ async def _build_with_template(template_path: str, payload: BuildReportReq, clie
 
                 inserted = _insert_blocks_after(insertion_ref, card_proto_xml)
                 _replace_placeholders_in_inserted_elements(
-                    doc, inserted, mapping_item, image_path, it.url, art["url_label"],
-                    use_chinese_font=use_chinese_font
-                )
+                  doc, inserted, mapping_item, image_path,
+                  (it.url if (it.url and not is_newspaper) else None),
+                  art["url_label"],
+                  use_chinese_font=use_chinese_font
+            )
+
                 insertion_ref = Paragraph(inserted[-1], doc) if inserted else insertion_ref
         else:
             for i, it in enumerate(group_items, start=1):
@@ -1012,3 +1040,4 @@ async def build_report(req: BuildReportReq):
             status_code=500,
             content={"error": str(e), "trace": traceback.format_exc()},
         )
+
