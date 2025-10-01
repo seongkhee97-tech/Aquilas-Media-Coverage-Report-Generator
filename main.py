@@ -371,9 +371,7 @@ def _add_article_body(doc: Document, title: str, text: str, url: Optional[str], 
 
     doc.add_paragraph("")
     src = doc.add_paragraph()
-    if url:
-        host = urlparse(url).hostname or "link"
-        host = host.replace("www.", "")
+    if url and _is_online(category)::
         src.add_run("Source from: ")
         _add_hyperlink(src, url, url)
     else:
@@ -493,7 +491,6 @@ def _add_hyperlink(paragraph, url: str, text: Optional[str] = None):
 
 # ---------- Article fetch (title, text, image-url + pasted image) ----------
 async def _fetch_article_fields(item: BuildItem) -> Dict[str, Any]:
-    """Return dict with title, text, image_url, pasted_image_path, url_label."""
     title = item.title_override or ""
     text = item.snippet or ""
     image_url = None
@@ -504,32 +501,40 @@ async def _fetch_article_fields(item: BuildItem) -> Dict[str, Any]:
 
     is_newspaper = not _is_online(item.category or "")
 
-    if item.url and not is_newspaper:
-        # Online: we may fetch and extract
-        try:
-            html = await _fetch_html(item.url)
-            if not title or not text:
-                meta = _extract_article(item.url, html)
-                title = title or (meta.get("title") or "")
-                text = text or (meta.get("text") or "")
-            if not pasted_image_path:
+    if is_newspaper:
+        # Newspaper: DO NOT fetch headline/content/URL. But DO try to fetch an image if possible.
+        if item.url and not pasted_image_path:
+            try:
+                html = await _fetch_html(item.url)
                 image_url = _extract_image_url(html, item.url)
-        except Exception:
-            pass
+            except Exception:
+                pass
     else:
-        # Newspaper: do NOT fetch headline/content/URL; keep whatever caller provided.
-        pass
+        # Online: may fetch headline/content/image
+        if item.url:
+            try:
+                html = await _fetch_html(item.url)
+                if not title or not text:
+                    meta = _extract_article(item.url, html)
+                    title = title or (meta.get("title") or "")
+                    text = text or (meta.get("text") or "")
+                if not pasted_image_path:
+                    image_url = _extract_image_url(html, item.url)
+            except Exception:
+                pass
 
-    if not text or not text.strip():
-        text = "(Content not extracted. See source note below.)"
-        if not title or title.strip() == "":
-            title = "[Headline]"
-    else:
-        if not title or title.strip() == "":
-            if item.url and not is_newspaper:
-                title = urlparse(item.url).path.rsplit("/", 1)[-1].replace("-", " ").title() or "[Headline]"
-            else:
+    # Default placeholders only matter for ONLINE path; template mapping blanks Newspaper fields anyway.
+    if not is_newspaper:
+        if not text or not text.strip():
+            text = "(Content not extracted. See source note below.)"
+            if not title or title.strip() == "":
                 title = "[Headline]"
+        else:
+            if not title or title.strip() == "":
+                if item.url:
+                    title = urlparse(item.url).path.rsplit("/", 1)[-1].replace("-", " ").title() or "[Headline]"
+                else:
+                    title = "[Headline]"
 
     url_label = ""
     if item.media and item.media.strip():
@@ -545,6 +550,7 @@ async def _fetch_article_fields(item: BuildItem) -> Dict[str, Any]:
         "pasted_image_path": pasted_image_path,
         "url_label": url_label,
     }
+
 
 
 # ---------- Card prototype detection & cloning ----------
@@ -1050,6 +1056,7 @@ async def build_report(req: BuildReportReq):
             status_code=500,
             content={"error": str(e), "trace": traceback.format_exc()},
         )
+
 
 
 
