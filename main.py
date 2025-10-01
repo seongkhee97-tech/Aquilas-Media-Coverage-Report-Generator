@@ -502,13 +502,9 @@ async def _fetch_article_fields(item: BuildItem) -> Dict[str, Any]:
     is_newspaper = not _is_online(item.category or "")
 
     if is_newspaper:
-        # Newspaper: DO NOT fetch headline/content/URL. But DO try to fetch an image if possible.
-        if item.url and not pasted_image_path:
-            try:
-                html = await _fetch_html(item.url)
-                image_url = _extract_image_url(html, item.url)
-            except Exception:
-                pass
+        # Newspaper: DO NOT fetch headline/content/URL or image from the web.
+        # We rely solely on user-pasted image (image_data).
+        pass
     else:
         # Online: may fetch headline/content/image
         if item.url:
@@ -523,7 +519,7 @@ async def _fetch_article_fields(item: BuildItem) -> Dict[str, Any]:
             except Exception:
                 pass
 
-    # Default placeholders only matter for ONLINE path; template mapping blanks Newspaper fields anyway.
+    # Placeholders only for ONLINE path (newspaper mapping blanks these anyway)
     if not is_newspaper:
         if not text or not text.strip():
             text = "(Content not extracted. See source note below.)"
@@ -550,6 +546,7 @@ async def _fetch_article_fields(item: BuildItem) -> Dict[str, Any]:
         "pasted_image_path": pasted_image_path,
         "url_label": url_label,
     }
+
 
 
 
@@ -689,17 +686,23 @@ def _replace_in_paragraph_single(p: Paragraph, mapping: Dict[str, Any],
             r.bold = True
 
 
-def _insert_image_into_paragraph(p: Paragraph, image_path: Optional[str]):
+def _insert_image_into_paragraph(p: Paragraph, image_path: Optional[str], keep_original: bool = False):
     for r in reversed(p.runs):
         r._element.getparent().remove(r._element)
     if image_path:
         try:
             run = p.add_run()
-            run.add_picture(image_path, width=Cm(10))  # 10 cm width; aspect ratio preserved
+            if keep_original:
+                # original native size
+                run.add_picture(image_path)
+            else:
+                # fixed width for online items
+                run.add_picture(image_path, width=Cm(10))
             return
         except Exception:
             pass
     p.add_run("")
+
 
 def _replace_placeholders_in_inserted_elements(
     doc: Document,
@@ -709,7 +712,9 @@ def _replace_placeholders_in_inserted_elements(
     url_for_link: Optional[str],
     url_label: str,
     use_chinese_font: bool = False,
+    keep_original_image: bool = False,   # <--- NEW
 ) -> None:
+
     """
     IMPORTANT: Detect {{ITEM_IMAGE}} BEFORE replacing text, then insert image afterwards.
     If use_chinese_font=True, rebuild runs for headline/content so Chinese uses SimSun
@@ -726,7 +731,7 @@ def _replace_placeholders_in_inserted_elements(
             _replace_in_paragraph_single(p, mapping, url_for_link, url_label)
 
             if had_img:
-                _insert_image_into_paragraph(p, image_path)
+                _insert_image_into_paragraph(p, image_path, keep_original=keep_original_image)
             else:
                 if use_chinese_font and not had_url_token:
                     _rebuild_runs_cjk_aware(p, is_headline=had_headline)
@@ -744,7 +749,7 @@ def _replace_placeholders_in_inserted_elements(
                         _replace_in_paragraph_single(p, mapping, url_for_link, url_label)
 
                         if had_img:
-                            _insert_image_into_paragraph(p, image_path)
+                            _insert_image_into_paragraph(p, image_path, keep_original=keep_original_image)
                         else:
                             if use_chinese_font and not had_url_token:
                                 _rebuild_runs_cjk_aware(p, is_headline=had_headline)
@@ -840,6 +845,7 @@ async def _build_with_template(template_path: str, payload: BuildReportReq, clie
                 (it.url if (it.url and not is_newspaper) else None),
                 art["url_label"],
                 use_chinese_font=use_chinese_font,
+                keep_original_image=is_newspaper,
             )
             insertion_ref = Paragraph(inserted[-1], doc) if inserted else insertion_ref
     else:
@@ -943,6 +949,7 @@ async def _build_with_template(template_path: str, payload: BuildReportReq, clie
                     (it.url if (it.url and not is_newspaper) else None),
                     art["url_label"],
                     use_chinese_font=use_chinese_font,
+                    keep_original_image=is_newspaper,
                 )
                 insertion_ref = Paragraph(inserted[-1], doc) if inserted else insertion_ref
         else:
@@ -1056,6 +1063,7 @@ async def build_report(req: BuildReportReq):
             status_code=500,
             content={"error": str(e), "trace": traceback.format_exc()},
         )
+
 
 
 
