@@ -744,6 +744,11 @@ def _replace_placeholders_in_inserted_elements(
                                 _rebuild_runs_cjk_aware(p, is_headline=had_headline)
 
 # ---------- Build using template (per-media pages, no clippings table) ----------
+
+    async def _build_with_template(template_path: str, payload: BuildReportReq, client_name: str) -> Document:
+    items: List[BuildItem] = payload.items or []
+
+
     # Group by media + category(normalized to online/newspaper) + language, preserving order
     def _cat_key(cat: str) -> str:
         return "online" if _is_online(cat) else "newspaper"
@@ -861,7 +866,7 @@ def _replace_placeholders_in_inserted_elements(
     header_proto_xml = _capture_header_blocks(template_path)
 
     remaining = list(media_groups.items())[1:]
-    for media_name, group_items in remaining:
+    for (media_name, cat_key, lang_key), group_items in remaining:
         doc.add_page_break()
         end_anchor = doc.add_paragraph("")
         inserted_hdr = _insert_blocks_after(end_anchor, header_proto_xml)
@@ -885,7 +890,6 @@ def _replace_placeholders_in_inserted_elements(
             "CATEGORY_SUMMARY": "Online news" if cat_key == "online" else "Newspaper",
             "SECTION_SUMMARY": _rollup_summary(group_items, "section"),
         }
-
         _replace_inline_placeholders(doc, mapping_group)
 
         last_table_marker = _find_last_paragraph_with_text(doc, "{{CLIPPINGS_TABLE}}")
@@ -902,10 +906,12 @@ def _replace_placeholders_in_inserted_elements(
         if card_proto_xml:
             for it in group_items:
                 art = await _fetch_article_fields(it)
+                is_newspaper = not _is_online(it.category or "")
+
                 mapping_item = {
-                    "ITEM_HEADLINE": art["title"],
-                    "ITEM_CONTENT": art["text"],
-                    "ITEM_URL": it.url or "",
+                    "ITEM_HEADLINE": art["title"] if not is_newspaper else "",
+                    "ITEM_CONTENT": art["text"]   if not is_newspaper else "",
+                    "ITEM_URL":     (it.url or "") if (it.url and not is_newspaper) else "",
                     "ITEM_URL_LABEL": art["url_label"],
                     "ITEM_MEDIA": it.media or "",
                     "ITEM_SECTION": it.section or "",
@@ -913,6 +919,7 @@ def _replace_placeholders_in_inserted_elements(
                     "ITEM_DATE": _fmt_date(it.date),
                     "ITEM_IMAGE": "",
                 }
+
                 image_path = None
                 if art["pasted_image_path"]:
                     image_path = art["pasted_image_path"]
@@ -923,12 +930,14 @@ def _replace_placeholders_in_inserted_elements(
 
                 inserted = _insert_blocks_after(insertion_ref, card_proto_xml)
                 _replace_placeholders_in_inserted_elements(
-                  doc, inserted, mapping_item, image_path,
-                  (it.url if (it.url and not is_newspaper) else None),
-                  art["url_label"],
-                  use_chinese_font=use_chinese_font
-            )
-
+                    doc,
+                    inserted,
+                    mapping_item,
+                    image_path,
+                    (it.url if (it.url and not is_newspaper) else None),
+                    art["url_label"],
+                    use_chinese_font=use_chinese_font,
+                )
                 insertion_ref = Paragraph(inserted[-1], doc) if inserted else insertion_ref
         else:
             for i, it in enumerate(group_items, start=1):
@@ -941,11 +950,12 @@ def _replace_placeholders_in_inserted_elements(
                 doc.add_paragraph(meta_line).italic = True
                 if art['text']:
                     doc.add_paragraph(art['text'])
-                if it.url:
+                if it.url and _is_online(it.category or ""):
                     p = doc.add_paragraph()
-                    p.add_run(f"Source from {art['url_label']}: ")
+                    p.add_run("Source from: ")
                     _add_hyperlink(p, it.url, it.url)
                 doc.add_paragraph().add_run("—" * 40)
+
 
     return doc
 
@@ -1040,4 +1050,5 @@ async def build_report(req: BuildReportReq):
             status_code=500,
             content={"error": str(e), "trace": traceback.format_exc()},
         )
+
 
