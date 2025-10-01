@@ -318,20 +318,36 @@ async def _download_image_to_temp(url: str) -> Optional[str]:
 
 def _data_url_to_temp(data_url: str) -> Optional[str]:
     try:
-        head, b64 = data_url.split(",", 1)
+        raw = None
         ext = ".jpg"
-        if "image/png" in head:
-            ext = ".png"
-        elif "image/webp" in head:
-            ext = ".webp"
-        elif "image/gif" in head:
-            ext = ".gif"
-        raw = base64.b64decode(b64)
+        if data_url.startswith("data:"):
+            head, b64 = data_url.split(",", 1)
+            # guess extension from mime
+            if "image/png" in head:
+                ext = ".png"
+            elif "image/webp" in head:
+                ext = ".webp"
+            elif "image/gif" in head:
+                ext = ".gif"
+            raw = base64.b64decode(b64)
+        else:
+            # Assume raw base64 payload; detect type from magic bytes
+            raw = base64.b64decode(data_url)
+            if raw.startswith(b"\x89PNG"):
+                ext = ".png"
+            elif raw[:3] == b"GIF":
+                ext = ".gif"
+            elif raw[:4] == b"RIFF" and b"WEBP" in raw[:12]:
+                ext = ".webp"
+            else:
+                ext = ".jpg"
+
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
             tmp.write(raw)
             return tmp.name
     except Exception:
         return None
+
 
 # ---------- Fallback (no template) ----------
 def _add_media_header_block(doc: Document, client_name: str, item: BuildItem):
@@ -712,14 +728,17 @@ def _replace_placeholders_in_inserted_elements(
     url_for_link: Optional[str],
     url_label: str,
     use_chinese_font: bool = False,
-    keep_original_image: bool = False,   # <--- NEW
+    keep_original_image: bool = False,
 ) -> None:
-
     """
     IMPORTANT: Detect {{ITEM_IMAGE}} BEFORE replacing text, then insert image afterwards.
     If use_chinese_font=True, rebuild runs for headline/content so Chinese uses SimSun
     and Latin stays Trebuchet MS (URL lines are left as template-styled).
     """
+
+    # NEW: track whether any image token existed in this card
+    found_image_token = False
+
     for el in inserted_elements:
         if isinstance(el, CT_P):
             p = Paragraph(el, doc)
@@ -731,6 +750,7 @@ def _replace_placeholders_in_inserted_elements(
             _replace_in_paragraph_single(p, mapping, url_for_link, url_label)
 
             if had_img:
+                found_image_token = True
                 _insert_image_into_paragraph(p, image_path, keep_original=keep_original_image)
             else:
                 if use_chinese_font and not had_url_token:
@@ -749,10 +769,25 @@ def _replace_placeholders_in_inserted_elements(
                         _replace_in_paragraph_single(p, mapping, url_for_link, url_label)
 
                         if had_img:
+                            found_image_token = True
                             _insert_image_into_paragraph(p, image_path, keep_original=keep_original_image)
                         else:
                             if use_chinese_font and not had_url_token:
                                 _rebuild_runs_cjk_aware(p, is_headline=had_headline)
+
+    # NEW: If there was a pasted image but NO {{ITEM_IMAGE}} anywhere, insert it above the card.
+    if image_path and not found_image_token and inserted_elements:
+        first_el = inserted_elements[0]
+        new_el = OxmlElement('w:p')
+        # Insert a new paragraph BEFORE the first element of this card
+        first_el.addprevious(new_el)
+        new_p = Paragraph(new_el, doc)
+        run = new_p.add_run()
+        if keep_original_image:
+            run.add_picture(image_path)         # original size (for Newspaper)
+        else:
+            run.add_picture(image_path, width=Cm(10))  # keep Online behavior
+
 
 # ---------- Build using template (per-media pages, no clippings table) ----------
 async def _build_with_template(template_path: str, payload: BuildReportReq, client_name: str) -> Document:
@@ -1063,6 +1098,7 @@ async def build_report(req: BuildReportReq):
             status_code=500,
             content={"error": str(e), "trace": traceback.format_exc()},
         )
+
 
 
 
