@@ -514,6 +514,11 @@ async def _fetch_article_fields(item: BuildItem) -> Dict[str, Any]:
 
     if item.image_data:
         pasted_image_path = _data_url_to_temp(item.image_data)
+        if pasted_image_path:
+            logger.info(f"[newspaper image] got pasted image ({len(item.image_data)} chars) -> {pasted_image_path}")
+        else:
+            logger.warning("[newspaper image] image_data present but could not decode (check data URL/base64)")
+
 
     is_newspaper = not _is_online(item.category or "")
 
@@ -775,18 +780,38 @@ def _replace_placeholders_in_inserted_elements(
                             if use_chinese_font and not had_url_token:
                                 _rebuild_runs_cjk_aware(p, is_headline=had_headline)
 
-    # NEW: If there was a pasted image but NO {{ITEM_IMAGE}} anywhere, insert it above the card.
+    # Fallback: if there was a pasted image but NO {{ITEM_IMAGE}} anywhere,
+    # insert it into the first block of the card. Prefer the first table cell, else a paragraph before the card.
     if image_path and not found_image_token and inserted_elements:
         first_el = inserted_elements[0]
-        new_el = OxmlElement('w:p')
-        # Insert a new paragraph BEFORE the first element of this card
-        first_el.addprevious(new_el)
-        new_p = Paragraph(new_el, doc)
-        run = new_p.add_run()
-        if keep_original_image:
-            run.add_picture(image_path)         # original size (for Newspaper)
+
+        # Case A: the card starts with a table -> put image into the top-left cell
+        if isinstance(first_el, CT_Tbl):
+            tbl = Table(first_el, doc)
+            # top-left cell
+            cell = tbl.rows[0].cells[0]
+            # use the first paragraph in that cell (or create one)
+            p = cell.paragraphs[0] if cell.paragraphs else cell.add_paragraph()
+            # clear current runs and add the picture
+            for r in list(p.runs)[::-1]:
+                r._element.getparent().remove(r._element)
+            run = p.add_run()
+            if keep_original_image:
+                run.add_picture(image_path)
+            else:
+                run.add_picture(image_path, width=Cm(10))
+
+        # Case B: the card starts with a paragraph -> insert a paragraph *before* the card and add the image
         else:
-            run.add_picture(image_path, width=Cm(10))  # keep Online behavior
+            new_el = OxmlElement('w:p')
+            first_el.addprevious(new_el)
+            new_p = Paragraph(new_el, doc)
+            run = new_p.add_run()
+            if keep_original_image:
+                run.add_picture(image_path)
+            else:
+                run.add_picture(image_path, width=Cm(10))
+
 
 
 # ---------- Build using template (per-media pages, no clippings table) ----------
@@ -1098,6 +1123,7 @@ async def build_report(req: BuildReportReq):
             status_code=500,
             content={"error": str(e), "trace": traceback.format_exc()},
         )
+
 
 
 
