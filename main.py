@@ -371,7 +371,7 @@ def _add_article_body(doc: Document, title: str, text: str, url: Optional[str], 
 
     doc.add_paragraph("")
     src = doc.add_paragraph()
-    if url and _is_online(category)::
+    if url and _is_online(category):
         src.add_run("Source from: ")
         _add_hyperlink(src, url, url)
     else:
@@ -1056,6 +1056,7 @@ async def build_report(req: BuildReportReq):
             status_code=500,
             content={"error": str(e), "trace": traceback.format_exc()},
         )
+
 
 
 
