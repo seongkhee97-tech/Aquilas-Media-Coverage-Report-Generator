@@ -744,10 +744,8 @@ def _replace_placeholders_in_inserted_elements(
                                 _rebuild_runs_cjk_aware(p, is_headline=had_headline)
 
 # ---------- Build using template (per-media pages, no clippings table) ----------
-
-    async def _build_with_template(template_path: str, payload: BuildReportReq, client_name: str) -> Document:
+async def _build_with_template(template_path: str, payload: BuildReportReq, client_name: str) -> Document:
     items: List[BuildItem] = payload.items or []
-
 
     # Group by media + category(normalized to online/newspaper) + language, preserving order
     def _cat_key(cat: str) -> str:
@@ -829,12 +827,14 @@ def _replace_placeholders_in_inserted_elements(
 
             inserted = _insert_blocks_after(insertion_ref, card_proto_xml)
             _replace_placeholders_in_inserted_elements(
-                doc, inserted, mapping_item, image_path,
+                doc,
+                inserted,
+                mapping_item,
+                image_path,
                 (it.url if (it.url and not is_newspaper) else None),
                 art["url_label"],
-                use_chinese_font=use_chinese_font
+                use_chinese_font=use_chinese_font,
             )
-
             insertion_ref = Paragraph(inserted[-1], doc) if inserted else insertion_ref
     else:
         for i, it in enumerate(first_items, start=1):
@@ -847,9 +847,9 @@ def _replace_placeholders_in_inserted_elements(
             doc.add_paragraph(meta_line).italic = True
             if art['text']:
                 doc.add_paragraph(art['text'])
-            if it.url:
+            if it.url and _is_online(it.category or ""):
                 p = doc.add_paragraph()
-                p.add_run(f"Source from {art['url_label']}: ")
+                p.add_run("Source from: ")
                 _add_hyperlink(p, it.url, it.url)
             doc.add_paragraph().add_run("—" * 40)
 
@@ -956,8 +956,8 @@ def _replace_placeholders_in_inserted_elements(
                     _add_hyperlink(p, it.url, it.url)
                 doc.add_paragraph().add_run("—" * 40)
 
-
     return doc
+
 
 # -----------------------------
 # API
@@ -1050,5 +1050,6 @@ async def build_report(req: BuildReportReq):
             status_code=500,
             content={"error": str(e), "trace": traceback.format_exc()},
         )
+
 
 
