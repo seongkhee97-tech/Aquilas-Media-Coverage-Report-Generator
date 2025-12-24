@@ -75,7 +75,7 @@ CLIENT_NAMES = [
     "LAC MED BERHAD",
     "LAND & GENERAL BERHAD",
     "MALAYAN FLOUR MILLS BERHAD",
-    "MALAYSIA STEEL WORKS (KL)BHD",
+    "MALAYSIA STEEL WORKS (KL) BERHAD",
     "MATRIX CONCEPTS HOLDINGS BERHAD",
     "PECCA GROUP BERHAD",
     "SCIENTEX BERHAD",
@@ -1123,6 +1123,7 @@ async def build_report(req: BuildReportReq):
             status_code=500,
             content={"error": str(e), "trace": traceback.format_exc()},
         )
+
 
 
 
