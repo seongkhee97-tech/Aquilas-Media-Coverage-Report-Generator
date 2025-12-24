@@ -159,28 +159,30 @@ def _add_hyperlink(paragraph, url, text):
     paragraph._p.append(hyperlink)
 
 def _replace_in_paragraph_single(p: Paragraph, mapping: Dict[str, Any], url_for_link: Optional[str]):
-    original_text = p.text or ""
-    had_url = "{{ITEM_URL}}" in original_text
-    
-    # Text Replacement
-    final_text = original_text
-    for k, v in mapping.items():
-        if k in ("ITEM_IMAGE", "ITEM_URL"): continue
-        final_text = final_text.replace(f"{{{{{k}}}}}", str(v or ""))
+    # Loop through each run in the paragraph to find and replace placeholders
+    # This preserves the formatting (like Bold) of individual runs
+    for run in p.runs:
+        original_run_text = run.text
+        new_run_text = original_run_text
+        
+        for k, v in mapping.items():
+            placeholder = f"{{{{{k}}}}}"
+            if placeholder in new_run_text:
+                new_run_text = new_run_text.replace(placeholder, str(v or ""))
+        
+        if new_run_text != original_run_text:
+            run.text = new_run_text
+            # If you want the replaced value to ALSO be bold, keep this:
+            run.bold = True
 
-    # Clear and rewrite with BOLD
-    if not had_url:
-        for r in list(p.runs)[::-1]:
-            r._element.getparent().remove(r._element)
-        new_run = p.add_run(final_text)
-        _set_run_bold(new_run) # Force Bold
-    else:
-        # Handle URL special line
+    # Special handling for URLs since they often require clearing the whole line
+    if "{{ITEM_URL}}" in p.text:
         for r in list(p.runs)[::-1]:
             r._element.getparent().remove(r._element)
         if url_for_link:
+            # Re-add bold prefix to match your template style
             prefix = p.add_run("Source from: ")
-            _set_run_bold(prefix)
+            prefix.bold = True
             _add_hyperlink(p, url_for_link, url_for_link)
 
 def _replace_placeholders_in_inserted_elements(doc, elements, mapping, img_path, url, use_cjk, is_newspaper):
@@ -346,3 +348,4 @@ async def build_report(req: BuildReportReq):
 def get_clients(): return CLIENTS
 @app.get("/media")
 def get_media(): return MEDIA_OPTIONS
+
