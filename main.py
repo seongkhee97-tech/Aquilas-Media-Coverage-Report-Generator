@@ -763,32 +763,36 @@ def _replace_placeholders_in_inserted_elements(
                 if use_chinese_font and not had_url_token:
                     _rebuild_runs_cjk_aware(p, is_headline=had_headline)
 
-elif isinstance(el, CT_Tbl):
+        elif isinstance(el, CT_Tbl):
             tbl = Table(el, doc)
             for row in tbl.rows:
                 for cell in row.cells:
                     for p in cell.paragraphs:
-                        # 1. Capture original state
-                        had_img = "{{ITEM_IMAGE}}" in (p.text or "")
-                        had_url_token = "{{ITEM_URL}}" in (p.text or "")
-                        had_headline = "{{ITEM_HEADLINE}}" in (p.text or "")
+                        # 1. Identify what's in the cell before replacing
+                        original_text = p.text or ""
+                        had_img = "{{ITEM_IMAGE}}" in original_text
+                        had_url_token = "{{ITEM_URL}}" in original_text
+                        had_headline = "{{ITEM_HEADLINE}}" in original_text
 
-                        # 2. Perform text replacement
+                        # 2. Perform the text replacement
                         _replace_in_paragraph_single(p, mapping, url_for_link, url_label)
 
-                        # 3. Apply Bolding to all text in the cell
-                        # We skip bolding if it's an image or a URL line to keep styling clean
-                        if not had_img and not had_url_token:
+                        # 3. Force BOLD on everything in this cell
+                        # This loop ensures even the text you just replaced becomes bold
+                        if not had_img: 
                             for run in p.runs:
                                 run.bold = True
-                        
-                        # 4. Handle specific cases (Images/CJK)
+                                # Force font size if the template is acting up
+                                run.font.size = Pt(11) 
+
+                        # 4. Handle Images/CJK as usual
                         if had_img:
                             found_image_token = True
                             _insert_image_into_paragraph(p, image_path, keep_original=keep_original_image)
                         else:
+                            # If it's Chinese, we need to force bold inside the CJK rebuilder
                             if use_chinese_font and not had_url_token:
-                                _rebuild_runs_cjk_aware(p, is_headline=True) # Force bold for CJK too
+                                _rebuild_runs_cjk_aware(p, is_headline=True)
 
     # Fallback: if there was a pasted image but NO {{ITEM_IMAGE}} anywhere,
     # insert it into the first block of the card. Prefer the first table cell, else a paragraph before the card.
@@ -1133,6 +1137,7 @@ async def build_report(req: BuildReportReq):
             status_code=500,
             content={"error": str(e), "trace": traceback.format_exc()},
         )
+
 
 
 
