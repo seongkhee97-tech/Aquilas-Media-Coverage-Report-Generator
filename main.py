@@ -4,11 +4,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Response
 import traceback, logging
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-import io
-import os, json, tempfile, time, re, base64
+import os, json, tempfile, re, base64
 from typing import List, Dict, Any, Optional, Tuple
 from urllib.parse import urlparse, urljoin
 from datetime import datetime
@@ -18,7 +17,7 @@ from copy import deepcopy
 import httpx
 import trafilatura
 from docx import Document
-from docx.shared import Pt, Inches, Cm
+from docx.shared import Pt, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.oxml.shared import OxmlElement
@@ -83,15 +82,8 @@ def _slug(s: str) -> str:
     return "".join(out).strip("-")
 
 CLIENTS: List[Dict[str, str]] = [{"id": _slug(n), "name": n} for n in CLIENT_NAMES]
+MEDIA_OPTIONS = ["Bernama", "The Star", "The Edge", "The Sun", "The Malaysian Reserve", "New Straits Times", "Sin Chew Daily", "China Press", "Nanyang Siang Pau", "Utusan Malaysia", "Berita Harian", "DagangNews"]
 
-MEDIA_OPTIONS = [
-    "Bernama", "The Star", "The Edge", "The Sun", "The Malaysian Reserve", "New Straits Times",
-    "Sin Chew Daily", "China Press", "Nanyang Siang Pau", "Utusan Malaysia", "Berita Harian", "DagangNews",
-]
-
-# -----------------------------
-# Models
-# -----------------------------
 class BuildItem(BaseModel):
     media: str
     category: str = "Online"
@@ -108,111 +100,135 @@ class BuildReportReq(BaseModel):
     items: List[BuildItem]
 
 # -----------------------------
-# Helpers
+# Bold & Font Helpers
 # -----------------------------
-def _resolve_client(client: str) -> Optional[Dict[str, str]]:
-    key = (client or "").strip().lower()
-    if not key: return None
-    for c in CLIENTS:
-        if key in {c["id"].lower(), c["name"].lower()}: return c
-    return None
+def _set_run_bold(run):
+    """Force bold on a run by setting property to True and adding XML b tag."""
+    run.bold = True
+    rPr = run._element.get_or_add_rPr()
+    b = rPr.find(qn('w:b'))
+    if b is None:
+        b = OxmlElement('w:b')
+        rPr.append(b)
+    b.set(qn('w:val'), '1')
 
-async def _fetch_html(url: str) -> str:
-    async with httpx.AsyncClient(timeout=25, headers={"User-Agent": "Mozilla/5.0"}) as c:
-        r = await c.get(url, follow_redirects=True)
-        r.raise_for_status()
-        return r.text
-
-def _extract_article(url: str, html: str) -> Dict[str, Any]:
-    raw = trafilatura.extract(html, url=url, include_images=False, include_links=False, output_format="json")
-    if not raw: return {"title": "", "text": ""}
-    try:
-        j = json.loads(raw)
-    except Exception:
-        return {"title": "", "text": ""}
-    return {"title": j.get("title") or "", "text": j.get("text") or ""}
-
-IMG_META_PATTERNS = [
-    re.compile(r'<meta\s+property=["\']og:image["\']\s+content=["\']([^"\']+)["\']', re.I),
-    re.compile(r'<meta\s+name=["\']twitter:image["\']\s+content=["\']([^"\']+)["\']', re.I),
-    re.compile(r'<link\s+rel=["\']image_src["\']\s+href=["\']([^"\']+)["\']', re.I),
-]
-IMG_FALLBACK_PAT = re.compile(r'<img\b[^>]*?\bsrc=["\']([^"\']+)["\'][^>]*>', re.I)
-
-def _clone_para_format(src_p: Paragraph, dst_p: Paragraph):
-    dst_p.style = src_p.style
-    dst_p.alignment = src_p.alignment
-    s, d = src_p.paragraph_format, dst_p.paragraph_format
-    d.left_indent, d.right_indent = s.left_indent, s.right_indent
-    d.first_line_indent, d.space_before, d.space_after = s.first_line_indent, s.space_before, s.space_after
-    d.line_spacing, d.line_spacing_rule = s.line_spacing, s.line_spacing_rule
-
-# ---------- Font helpers ----------
-CJK_SEG_RE = re.compile(r'([\u4e00-\u9fff]+)')
-
-def _segment_cjk(text: str):
-    parts, last = [], 0
-    text = text or ""
-    for m in CJK_SEG_RE.finditer(text):
-        s, e = m.span()
-        if s > last: parts.append((text[last:s], False))
-        parts.append((text[s:e], True))
-        last = e
-    if last < len(text): parts.append((text[last:], False))
-    return parts
-
-def _set_run_eastasia_font(run, ea_font: str = "SimSun", latin_font: Optional[str] = None):
-    if latin_font: run.font.name = latin_font
+def _set_run_eastasia_font(run, ea_font="SimSun"):
     rPr = run._element.get_or_add_rPr()
     rFonts = rPr.get_or_add_rFonts()
     rFonts.set(qn('w:eastAsia'), ea_font)
 
-def _rebuild_runs_cjk_aware(p: Paragraph, is_headline: bool = True, latin_font_name: str = "Trebuchet MS"):
+def _rebuild_runs_cjk_aware(p: Paragraph, latin_font_name="Trebuchet MS"):
     text_now = p.text or ""
-    for r in reversed(p.runs):
+    for r in list(p.runs)[::-1]:
         r._element.getparent().remove(r._element)
-    for seg, is_cjk in _segment_cjk(text_now):
+    
+    parts = []
+    last = 0
+    for m in re.finditer(r'([\u4e00-\u9fff]+)', text_now):
+        s, e = m.span()
+        if s > last: parts.append((text_now[last:s], False))
+        parts.append((text_now[s:e], True))
+        last = e
+    if last < len(text_now): parts.append((text_now[last:], False))
+
+    for seg, is_cjk in parts:
         if not seg: continue
         run = p.add_run(seg)
-        run.bold = True  # <--- FIXED: Force bold for CJK segments
+        _set_run_bold(run) # Force Bold
         if is_cjk:
-            _set_run_eastasia_font(run, ea_font="SimSun")
+            _set_run_eastasia_font(run, "SimSun")
         else:
             run.font.name = latin_font_name
 
-# ---------- Article & Image ----------
-def _normalize_article_paragraphs(text: str) -> list[str]:
-    if not text: return []
-    t = text.replace("\r\n", "\n").strip()
-    if "\n\n" in t:
-        return [re.sub(r'[ \t]+', ' ', b.strip()) for b in re.split(r'\n\s*\n', t) if b]
-    return [re.sub(r'[ \t]+', ' ', ln.strip()) for ln in t.split("\n") if ln]
-
-async def _download_image_to_temp(url: str) -> Optional[str]:
-    try:
-        async with httpx.AsyncClient(timeout=25) as c:
-            r = await c.get(url, follow_redirects=True)
-            r.raise_for_status()
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-                tmp.write(r.content)
-                return tmp.name
-    except: return None
-
-def _data_url_to_temp(data_url: str) -> Optional[str]:
-    try:
-        head, b64 = data_url.split(",", 1)
-        raw = base64.b64decode(b64)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-            tmp.write(raw)
-            return tmp.name
-    except: return None
-
-# ---------- Replacement Logic ----------
-def _add_hyperlink(paragraph, url: str, text: str):
+# -----------------------------
+# Core Replacement Logic
+# -----------------------------
+def _add_hyperlink(paragraph, url, text):
     part = paragraph.part
     r_id = part.relate_to(url, reltype=RT.HYPERLINK, is_external=True)
     hyperlink = OxmlElement('w:hyperlink')
     hyperlink.set(qn('r:id'), r_id)
     new_run = OxmlElement('w:r')
     rPr = OxmlElement('w:rPr')
-    rPr.append(OxmlElement('w:b
+    rPr.append(OxmlElement('w:b')) # Hyperlink Bold
+    u = OxmlElement('w:u'); u.set(qn('w:val'), 'single'); rPr.append(u)
+    c = OxmlElement('w:color'); c.set(qn('w:val'), '0563C1'); rPr.append(c)
+    new_run.append(rPr)
+    t = OxmlElement('w:t'); t.text = text; new_run.append(t)
+    hyperlink.append(new_run)
+    paragraph._p.append(hyperlink)
+
+def _replace_in_paragraph_single(p: Paragraph, mapping: Dict[str, Any], url_for_link: Optional[str]):
+    original_text = p.text or ""
+    had_url = "{{ITEM_URL}}" in original_text
+    
+    # Text Replacement
+    final_text = original_text
+    for k, v in mapping.items():
+        if k in ("ITEM_IMAGE", "ITEM_URL"): continue
+        final_text = final_text.replace(f"{{{{{k}}}}}", str(v or ""))
+
+    # Clear and rewrite with BOLD
+    if not had_url:
+        for r in list(p.runs)[::-1]:
+            r._element.getparent().remove(r._element)
+        new_run = p.add_run(final_text)
+        _set_run_bold(new_run) # Force Bold
+    else:
+        # Handle URL special line
+        for r in list(p.runs)[::-1]:
+            r._element.getparent().remove(r._element)
+        if url_for_link:
+            prefix = p.add_run("Source from: ")
+            _set_run_bold(prefix)
+            _add_hyperlink(p, url_for_link, url_for_link)
+
+def _replace_placeholders_in_inserted_elements(doc, elements, mapping, img_path, url, use_cjk, is_newspaper):
+    found_img = False
+    for el in elements:
+        if isinstance(el, CT_P):
+            p = Paragraph(el, doc)
+            txt = p.text or ""
+            if "{{ITEM_IMAGE}}" in txt:
+                found_img = True
+                _insert_image_into_paragraph(p, img_path, is_newspaper)
+            else:
+                _replace_in_paragraph_single(p, mapping, url)
+                if use_cjk: _rebuild_runs_cjk_aware(p)
+                else:
+                    for r in p.runs: _set_run_bold(r) # Final Force Bold
+
+        elif isinstance(el, CT_Tbl):
+            tbl = Table(el, doc)
+            for row in tbl.rows:
+                for cell in row.cells:
+                    for p in cell.paragraphs:
+                        txt = p.text or ""
+                        if "{{ITEM_IMAGE}}" in txt:
+                            found_img = True
+                            _insert_image_into_paragraph(p, img_path, is_newspaper)
+                        else:
+                            _replace_in_paragraph_single(p, mapping, url)
+                            if use_cjk: _rebuild_runs_cjk_aware(p)
+                            else:
+                                for r in p.runs: _set_run_bold(r) # Force Bold inside Table
+
+# -----------------------------
+# Scrapers & Utils
+# -----------------------------
+def _is_online(cat): return "online" in (cat or "").lower()
+def _fmt_date(s):
+    try: return datetime.strptime(s[:10], "%Y-%m-%d").strftime("%d %B %Y")
+    except: return s or ""
+
+async def _fetch_html(url):
+    async with httpx.AsyncClient(timeout=25, headers={"User-Agent": "Mozilla/5.0"}) as c:
+        r = await c.get(url, follow_redirects=True)
+        r.raise_for_status()
+        return r.text
+
+async def _fetch_article_fields(item: BuildItem):
+    res = {"title": item.title_override or "[Headline]", "text": item.snippet or "", "image_url": None, "pasted_image": None}
+    if item.image_data: res["pasted_image"] = _data_url_to_temp(item.image_data)
+    if _is_online(item.category) and item.url:
+        try:
