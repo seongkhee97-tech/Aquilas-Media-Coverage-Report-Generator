@@ -232,3 +232,117 @@ async def _fetch_article_fields(item: BuildItem):
     if item.image_data: res["pasted_image"] = _data_url_to_temp(item.image_data)
     if _is_online(item.category) and item.url:
         try:
+            h = await _fetch_html(item.url)
+            ex = trafilatura.extract(h, url=item.url, include_images=False, output_format="json")
+            if ex:
+                j = json.loads(ex)
+                if not item.title_override: res["title"] = j.get("title") or res["title"]
+                if not item.snippet: res["text"] = j.get("text") or res["text"]
+        except: pass
+    return res
+
+def _data_url_to_temp(d):
+    try:
+        raw = base64.b64decode(d.split(",")[1])
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as t:
+            t.write(raw); return t.name
+    except: return None
+
+async def _download_image_to_temp(u):
+    try:
+        async with httpx.AsyncClient() as c:
+            r = await c.get(u); r.raise_for_status()
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as t:
+                t.write(r.content); return t.name
+    except: return None
+
+def _insert_image_into_paragraph(p, path, keep_orig):
+    for r in list(p.runs)[::-1]: r._element.getparent().remove(r._element)
+    if path:
+        try:
+            r = p.add_run()
+            if keep_orig: r.add_picture(path)
+            else: r.add_picture(path, width=Cm(14))
+        except: pass
+
+# -----------------------------
+# Build logic
+# -----------------------------
+async def _build_with_template(t_path, req, client_name):
+    doc = Document(t_path)
+    blocks = list(doc.element.body.iterchildren())
+    
+    # 1. Page-level summary replacement
+    mapping_doc = {"CLIENT_NAME": client_name, "TOTAL_CLIPPINGS": len(req.items)}
+    for p in doc.paragraphs:
+        for k, v in mapping_doc.items():
+            if f"{{{{{k}}}}}" in p.text: p.text = p.text.replace(f"{{{{{k}}}}}", str(v))
+
+    # 2. Extract Card Proto
+    marker_idx = -1
+    card_proto = []
+    for i, b in enumerate(blocks):
+        if isinstance(b, CT_P) and "{{EXTRACTS_START}}" in (Paragraph(b, doc).text or ""):
+            marker_idx = i
+            j = i + 1
+            while j < len(blocks):
+                txt = Paragraph(blocks[j], doc).text if isinstance(blocks[j], CT_P) else "TABLE"
+                if any(tok in txt for tok in ["{{ITEM_HEADLINE}}", "{{ITEM_MEDIA}}", "TABLE"]):
+                    card_proto.append(deepcopy(blocks[j]))
+                    j += 1
+                else: break
+            break
+    
+    # Clean up marker and proto from document
+    if marker_idx != -1:
+        marker_p = Paragraph(blocks[marker_idx], doc)
+        marker_p.text = ""
+        ref_el = blocks[marker_idx]
+        for i in range(len(card_proto)):
+            blocks[marker_idx + 1 + i].getparent().remove(blocks[marker_idx + 1 + i])
+
+        # 3. Generate Items
+        for it in req.items:
+            art = await _fetch_article_fields(it)
+            is_news = not _is_online(it.category)
+            mapping = {
+                "ITEM_HEADLINE": art["title"] if not is_news else "",
+                "ITEM_CONTENT": art["text"] if not is_news else "",
+                "ITEM_MEDIA": it.media or "", "ITEM_SECTION": it.section or "",
+                "ITEM_LANGUAGE": it.language or "", "ITEM_DATE": _fmt_date(it.date)
+            }
+            img = art["pasted_image"] or (await _download_image_to_temp(art["image_url"]) if art["image_url"] else None)
+            
+            inserted = []
+            for xml_el in card_proto:
+                new_el = deepcopy(xml_el)
+                ref_el.addnext(new_el)
+                ref_el = new_el
+                inserted.append(new_el)
+            
+            _replace_placeholders_in_inserted_elements(doc, inserted, mapping, img, it.url, it.language=="Chinese", is_news)
+            
+    return doc
+
+@app.post("/build_report")
+async def build_report(req: BuildReportReq):
+    try:
+        c = next((cl for cl in CLIENTS if cl["id"] == req.client), {"name": req.client})
+        t_path = os.path.join(os.path.dirname(__file__), "template.docx")
+        doc = await _build_with_template(t_path, req, c["name"])
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
+            doc.save(tmp.name)
+            with open(tmp.name, "rb") as f: data = f.read()
+        os.remove(tmp.name)
+        
+        return Response(content=data, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        headers={"Content-Disposition": f"attachment; filename=report.docx"})
+    except Exception as e:
+        logger.exception("Build failed")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.get("/clients")
+def get_clients(): return CLIENTS
+@app.get("/media")
+def get_media(): return MEDIA_OPTIONS
