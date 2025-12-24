@@ -109,7 +109,7 @@ MEDIA_OPTIONS = [
 # -----------------------------
 class BuildItem(BaseModel):
     media: str
-    category: str = "Online news"       # "Online news" or "NewsPaper"
+    category: str = "Online"       # "Online news" or "NewsPaper"
     section: Optional[str] = None
     language: Optional[str] = None
     date: Optional[str] = None          # ISO yyyy-mm-dd preferred
@@ -420,7 +420,9 @@ def _fmt_date(iso_str: Optional[str]) -> str:
 
 def _is_online(category: str) -> bool:
     cat = (category or "").lower()
-    return "paper" not in cat
+    if "print" in cat or "paper" in cat:
+        return False
+    return True
 
 def _replace_inline_placeholders(doc: Document, mapping: Dict[str, Any]) -> None:
     def replace_in_paragraph(p):
@@ -820,7 +822,7 @@ async def _build_with_template(template_path: str, payload: BuildReportReq, clie
 
     # Group by media + category(normalized to online/newspaper) + language, preserving order
     def _cat_key(cat: str) -> str:
-        return "online" if _is_online(cat) else "newspaper"
+        return "online" if _is_online(cat) else "print"
 
     media_groups: "OrderedDict[tuple[str, str, str], List[BuildItem]]" = OrderedDict()
     for it in items:
@@ -860,7 +862,7 @@ async def _build_with_template(template_path: str, payload: BuildReportReq, clie
         "SUMMARY_TEXT": f"Total clippings: {total}. Online: {online}. Newspaper: {paper}.",
         "LANG_SUMMARY": _rollup_summary(first_items, "language"),  # stays single now
         "MEDIA_SUMMARY": first_media or "",
-        "CATEGORY_SUMMARY": "Online news" if first_cat_key == "online" else "Newspaper",
+        "CATEGORY_SUMMARY": "Online" if first_cat_key == "online" else "Print",
         "SECTION_SUMMARY": _rollup_summary(first_items, "section"),
     }
     _replace_inline_placeholders(doc, mapping_first)
@@ -1123,6 +1125,7 @@ async def build_report(req: BuildReportReq):
             status_code=500,
             content={"error": str(e), "trace": traceback.format_exc()},
         )
+
 
 
 
