@@ -775,6 +775,10 @@ def _replace_placeholders_in_inserted_elements(
 
                         _replace_in_paragraph_single(p, mapping, url_for_link, url_label)
 
+                        if not had_img:  # We don't bold the image itself
+                            for run in p.runs:
+                                run.bold = True
+                                
                         if had_img:
                             found_image_token = True
                             _insert_image_into_paragraph(p, image_path, keep_original=keep_original_image)
@@ -1125,6 +1129,7 @@ async def build_report(req: BuildReportReq):
             status_code=500,
             content={"error": str(e), "trace": traceback.format_exc()},
         )
+
 
 
 
